@@ -1,8 +1,10 @@
-.PHONY: help venv install install-dev test deploy destroy env plan strands langgraph fmt validate clean
+.PHONY: help venv install install-dev test deploy destroy env plan strands strands-mask langgraph langgraph-mask fmt validate clean
 
 TF_DIR := terraform
 ENV_FILE := app/.env
 PY := python3
+# Default demo text (an SSN so BLOCK vs MASK is visible). Override with TEXT="...".
+TEXT ?= My SSN is 123-45-6789 and email jane@example.com, check my claim
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -40,12 +42,22 @@ fmt: ## terraform fmt
 validate: ## terraform validate
 	cd $(TF_DIR) && terraform init -backend=false && terraform validate
 
-strands: ## Run the Strands example (set TEXT="..." to customize)
+strands: ## Run Strands with the BLOCK guardrail (default). TEXT="..." to customize
 	set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \
 		$(PY) app/strands_app.py "$(TEXT)"
 
-langgraph: ## Run the LangGraph example (set TEXT="..." to customize)
+strands-mask: ## Run Strands with the MASK guardrail (SSN anonymized)
 	set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \
+		GUARDRAIL_ID=$$GUARDRAIL_ID_MASK GUARDRAIL_VERSION=$$GUARDRAIL_VERSION_MASK \
+		$(PY) app/strands_app.py "$(TEXT)"
+
+langgraph: ## Run LangGraph with the BLOCK guardrail (default). TEXT="..." to customize
+	set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \
+		$(PY) app/langgraph_app.py "$(TEXT)"
+
+langgraph-mask: ## Run LangGraph with the MASK guardrail (SSN anonymized)
+	set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a; \
+		GUARDRAIL_ID=$$GUARDRAIL_ID_MASK GUARDRAIL_VERSION=$$GUARDRAIL_VERSION_MASK \
 		$(PY) app/langgraph_app.py "$(TEXT)"
 
 clean: ## Remove caches and venv

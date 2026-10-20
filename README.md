@@ -21,37 +21,42 @@ infrastructure and scripts to make it easy to test and deploy.
 
 | Entity | Action | Effect |
 | --- | --- | --- |
-| `US_SOCIAL_SECURITY_NUMBER` | **BLOCK** (default) | Refuse to store the raw turn; a placeholder is stored instead |
+| `US_SOCIAL_SECURITY_NUMBER` | **BLOCK** or **ANONYMIZE** | depends which guardrail you call |
 | Email, phone, address, name, DOB, cards, keys, … | **ANONYMIZE** | Masked, e.g. `My email is {EMAIL}` — turn stays usable |
 
-SSN uses `BLOCK` because masking isn't enough for the strictest categories.
+**Two guardrails are deployed**, differing only in the SSN action:
 
-**The MASK-vs-BLOCK decision lives in code** (the `sanitize()` function inside
-each app file), driven by the `SSN_ACTION` env var — so you can flip it and
-test instantly, with no redeploy:
+- the **block** guardrail — SSN is **BLOCKED** (the turn is refused; a
+  placeholder is stored). Use this when masking isn't enough for SSN.
+- the **mask** guardrail — SSN is **ANONYMIZED** to
+  `{US_SOCIAL_SECURITY_NUMBER}`, keeping the turn usable.
+
+Everything else is ANONYMIZED by both. The app chooses the behavior purely by
+which guardrail id it calls — there is no block/mask logic in the code:
 
 ```bash
-# default: SSN is blocked (raw turn not stored)
-make strands TEXT="My SSN is 123-45-6789"
+# SSN blocked (uses the block guardrail — the default GUARDRAIL_ID)
+make strands        # or: make langgraph
 
-# flip SSN to masking: stored as "My SSN is {US_SOCIAL_SECURITY_NUMBER}"
-SSN_ACTION=ANONYMIZE make strands TEXT="My SSN is 123-45-6789"
+# SSN masked (uses the mask guardrail — GUARDRAIL_ID_MASK)
+make strands-mask   # or: make langgraph-mask
+
+# customize the text in any target:
+make strands TEXT="My SSN is 123-45-6789 and email jane@example.com"
 ```
 
-When SSN is flipped to `ANONYMIZE`, `sanitize()` masks the value client-side
-(`{US_SOCIAL_SECURITY_NUMBER}`) even though the deployed guardrail still blocks
-SSN at the service level — defense in depth. The Terraform `ssn_action`
-variable only sets the *service-level* guardrail default; the authoritative app
-decision is the `SSN_ACTION` code-level policy above.
+`terraform output` emits both ids (`block_guardrail_id`, `mask_guardrail_id`);
+`make env` writes `GUARDRAIL_ID` (block) and `GUARDRAIL_ID_MASK` into `app/.env`.
 
 ## Architecture
 
 ```
  user turn  ─┐
              ├─►  sanitize(text, source)   # inline in each app file
- model turn ─┘        • apply_guardrail(source=INPUT|OUTPUT)
-                      • SSN  -> BLOCK  (store a placeholder)
-                      • PII  -> ANONYMIZE (mask to {TYPE})
+ model turn ─┘        • apply_guardrail(guardrailId=GUARDRAIL_ID, source=…)
+                      • guardrail blocked  -> store a placeholder
+                      • guardrail masked   -> store the masked text ({TYPE})
+                      • nothing sensitive  -> store as-is
                               │  (only sanitized text)
                               ▼
                   session.add_turns(...)  ==  CreateEvent
@@ -61,7 +66,7 @@ decision is the `SSN_ACTION` code-level policy above.
 ```
 
 Both apps call `sanitize()` BEFORE `add_turns`, so raw PII never reaches the
-immutable event log.
+immutable event log. The guardrail (not the code) decides block vs mask.
 
 ## Layout
 
@@ -70,7 +75,7 @@ immutable event log.
 ├── app/
 │   ├── strands_app.py              # Strands  — single self-contained file
 │   └── langgraph_app.py            # LangGraph — single self-contained file
-├── terraform/                      # guardrail + memory + IAM
+├── terraform/                      # two guardrails + memory + IAM
 ├── tests/test_sanitizer.py         # unit tests for sanitize() (no AWS needed)
 ├── scripts/
 │   ├── setup.sh                    # venv + deps + tests
@@ -93,24 +98,30 @@ immutable event log.
 ./scripts/setup.sh
 source .venv/bin/activate
 
-# 2. Provision infra (guardrail, memory, IAM, audit log group)
+# 2. Provision infra (two guardrails, memory, IAM)
 make deploy
 
-# 3. Generate app/.env from terraform outputs
+# 3. Generate app/.env from terraform outputs (block + mask guardrail ids)
 make env
 
 # 4. Confirm the live guardrail response shape (recommended once)
 set -a; . app/.env; set +a
 python scripts/smoke_test_guardrail.py
 
-# 5. Run either implementation
-make strands   TEXT="My SSN is 123-45-6789 and email jane@example.com, check my claim"
-make langgraph TEXT="My SSN is 123-45-6789 and email jane@example.com, check my claim"
+# 5. Run either implementation (default policy: SSN blocked)
+make strands        # or: make langgraph
+
+#    ...or run with SSN masked instead of blocked:
+make strands-mask   # or: make langgraph-mask
+
+#    customize the input text on any target:
+make strands TEXT="My SSN is 123-45-6789 and email jane@example.com, check my claim"
 ```
 
-What you'll see: the raw user/assistant text, then the **sanitized** turns that
-were actually written to short-term memory (SSN blocked → placeholder, email →
-`{EMAIL}`), plus audit lines noting the entity *types* detected.
+What you'll see, per turn: the raw text and what was actually stored in
+short-term memory — with the block guardrail the SSN turn becomes a placeholder
+(`[redacted: blocked sensitive data]`); with the mask guardrail it becomes
+`My SSN is {US_SOCIAL_SECURITY_NUMBER} and email {EMAIL}, …`.
 
 ## The `sanitize()` function
 
@@ -120,17 +131,20 @@ Each app file contains the same small function — copy it into your own agent:
 def sanitize(text: str, source: str) -> str:
     # source = "INPUT" for user turns, "OUTPUT" for assistant turns
     resp = bedrock.apply_guardrail(
-        guardrailIdentifier=GUARDRAIL_ID,
+        guardrailIdentifier=GUARDRAIL_ID,          # block or mask guardrail
         guardrailVersion=GUARDRAIL_VERSION,
         source=source,
         content=[{"text": {"text": text}}],
     )
     if resp.get("action") != "GUARDRAIL_INTERVENED":
-        return text                       # nothing sensitive -> store as-is
-    # ... BLOCK SSN (placeholder) or mask other PII to {TYPE} ...
+        return text                                 # nothing sensitive
+    if "block" in resp.get("actionReason", "").lower():
+        return "[redacted: blocked sensitive data]" # guardrail blocked the turn
+    return resp["outputs"][0]["text"]               # guardrail's masked text
 ```
 
-Call it on every turn **before** `session.add_turns(...)`.
+Call it on every turn **before** `session.add_turns(...)`. The guardrail — not
+the code — decides block vs mask; the function just stores what comes back.
 
 ## Testing
 

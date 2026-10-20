@@ -10,28 +10,6 @@ variable "name_prefix" {
   default     = "pii-redaction"
 }
 
-variable "ssn_action" {
-  description = "SERVICE-LEVEL default for US_SOCIAL_SECURITY_NUMBER in the deployed guardrail. The authoritative MASK-vs-BLOCK decision for the app lives in CODE (the SSN_ACTION env var read by sanitize()), not here. Keep BLOCK for defense in depth."
-  type        = string
-  default     = "BLOCK"
-
-  validation {
-    condition     = contains(["BLOCK", "ANONYMIZE"], var.ssn_action)
-    error_message = "ssn_action must be BLOCK or ANONYMIZE."
-  }
-}
-
-variable "other_pii_action" {
-  description = "Action for all other PII entities (EMAIL, PHONE, ADDRESS, NAME, DOB, ...)."
-  type        = string
-  default     = "ANONYMIZE"
-
-  validation {
-    condition     = contains(["BLOCK", "ANONYMIZE"], var.other_pii_action)
-    error_message = "other_pii_action must be BLOCK or ANONYMIZE."
-  }
-}
-
 variable "event_expiry_days" {
   description = "Days after which short-term memory events expire (3-365)."
   type        = number

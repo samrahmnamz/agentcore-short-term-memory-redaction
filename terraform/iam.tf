@@ -63,7 +63,7 @@ data "aws_iam_policy_document" "app" {
     sid       = "ApplyGuardrail"
     effect    = "Allow"
     actions   = ["bedrock:ApplyGuardrail"]
-    resources = [aws_bedrock_guardrail.pii.guardrail_arn]
+    resources = [for g in aws_bedrock_guardrail.pii : g.guardrail_arn]
   }
 
   statement {
