@@ -1,0 +1,14 @@
+# Core AWS SDK
+boto3>=1.35.0
+
+# AgentCore Memory SDK (+ Strands integration extras)
+bedrock-agentcore>=0.1.0
+strands-agents>=0.1.0
+
+# LangGraph + Bedrock chat model
+langgraph>=0.2.0
+langchain-aws>=0.2.0
+langchain-core>=0.3.0
+
+# Config
+python-dotenv>=1.0.0
